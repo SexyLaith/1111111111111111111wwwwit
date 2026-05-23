@@ -1,6 +1,5 @@
 import sys
 
-# Dummy Audioop fix for environments lacking it (like Python 3.13+ on Linux)
 class DummyAudioop:
     error = Exception
     def mul(self, cp, size, factor): return b''
@@ -22,7 +21,6 @@ import requests
 from flask import Flask
 import websockets
 
-# Flask Keep Alive Setup for Railway
 app = Flask('')
 
 @app.route('/')
@@ -93,9 +91,10 @@ class DiscordVoiceAFK:
         self.heartbeat_interval = None
         self.sequence = None
         self.ws = None
+        self.is_running = True
 
     async def send_heartbeat(self):
-        while self.ws:
+        while self.ws and self.is_running:
             if self.heartbeat_interval:
                 await asyncio.sleep(self.heartbeat_interval / 1000)
                 heartbeat_payload = {"op": 1, "d": self.sequence}
@@ -124,48 +123,52 @@ class DiscordVoiceAFK:
                 print(f"[X] Failed to update voice state for {self.account_id}: {e}")
 
     async def start(self):
-        print(f"[*] [{self.account_id}] Connecting to Room: {self.target_channel_id}")
-        try:
-            async with websockets.connect(self.ws_url, max_size=None) as ws:
-                self.ws = ws
-                hello_msg = await ws.recv()
-                hello_data = json.loads(hello_msg)
-                
-                if hello_data['op'] == 10:  
-                    self.heartbeat_interval = hello_data['d']['heartbeat_interval']
-                    asyncio.create_task(self.send_heartbeat())
-                
-                identify_payload = {
-                    "op": 2,
-                    "d": {
-                        "token": self.token,
-                        "capabilities": 8189,
-                        "properties": {
-                            "os": "Linux", "browser": "Discord Client", "release_channel": "stable",
-                            "client_version": "1.0.9001", "os_version": "Ubuntu", "os_arch": "x64",
-                            "system_locale": "en-US", "client_build_number": 260000, "client_event_source": None
-                        },
-                        "presence": {"status": "online", "since": 0, "activities": [], "afk": False},
-                        "compress": False
+        while self.is_running:
+            print(f"[*] [{self.account_id}] Connecting to Room: {self.target_channel_id}")
+            try:
+                async with websockets.connect(self.ws_url, max_size=None) as ws:
+                    self.ws = ws
+                    hello_msg = await ws.recv()
+                    hello_data = json.loads(hello_msg)
+                    
+                    if hello_data['op'] == 10:  
+                        self.heartbeat_interval = hello_data['d']['heartbeat_interval']
+                        asyncio.create_task(self.send_heartbeat())
+                    
+                    identify_payload = {
+                        "op": 2,
+                        "d": {
+                            "token": self.token,
+                            "capabilities": 8189,
+                            "properties": {
+                                "os": "Linux", "browser": "Discord Client", "release_channel": "stable",
+                                "client_version": "1.0.9001", "os_version": "Ubuntu", "os_arch": "x64",
+                                "system_locale": "en-US", "client_build_number": 260000, "client_event_source": None
+                            },
+                            "presence": {"status": "online", "since": 0, "activities": [], "afk": False},
+                            "compress": False
+                        }
                     }
-                }
-                await ws.send(json.dumps(identify_payload))
-                await asyncio.sleep(1.5)
-                await self.update_voice_state()
-                print(f"[+] [{self.account_id}] Connected Successfully inside Room.")
+                    await ws.send(json.dumps(identify_payload))
+                    await asyncio.sleep(1.5)
+                    await self.update_voice_state()
+                    print(f"[+] [{self.account_id}] Connected Successfully inside Room.")
 
-                while True:
-                    try:
-                        message = await asyncio.wait_for(ws.recv(), timeout=1.0)
-                        data = json.loads(message)
-                        if data.get('s'): self.sequence = data['s']
-                        if data.get('op') == 7: break
-                    except asyncio.TimeoutError:
-                        continue
-        except Exception as e:
-            print(f"[X] [{self.account_id}] Connection Interrupted: {e}")
-        finally:
-            self.ws = None
+                    while self.is_running:
+                        try:
+                            message = await asyncio.wait_for(ws.recv(), timeout=1.0)
+                            data = json.loads(message)
+                            if data.get('s'): self.sequence = data['s']
+                            if data.get('op') == 7: # تعني أن ديسكورد يطلب إعادة اتصال
+                                break
+                        except asyncio.TimeoutError:
+                            continue
+            except Exception as e:
+                print(f"[X] [{self.account_id}] Connection Interrupted ({e}). Retrying in 5s...")
+            finally:
+                self.ws = None
+            
+            await asyncio.sleep(5)
 
 async def start_async_loop():
     clients = []
@@ -192,4 +195,6 @@ if __name__ == "__main__":
     t_flask.start()
 
     print("[*] Connecting all accounts to their dedicated channels...")
-    asyncio.run(start_async_loop())
+    
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(start_async_loop())
